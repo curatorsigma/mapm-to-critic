@@ -1,7 +1,12 @@
 [package]
 name = "mapm-to-critic"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2024"
+repository = "https://github.com/curatorsigma/mapm-to-critic"
+categories = ["command-line-utilities"]
+keywords = ["cli"]
+license = "MIT-0"
+description = "This CLI tool converts MapM Data to the base corpus format used in critic."
 
 [dependencies]
 clap = { version = "4.5.60", features = ["derive"] }

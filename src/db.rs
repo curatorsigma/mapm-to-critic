@@ -35,7 +35,7 @@ where
         chunk.content,
         new_verse_ids.iter().min(),
         new_verse_ids.iter().max(),)
-        .execute(&*pool)
+        .execute(pool)
         .await
         .map(|_| ())
 }
@@ -49,7 +49,7 @@ async fn insert_verses(
     let mut res = Vec::new();
     for verse in verses {
         let new_id = sqlx::query!("INSERT INTO verse DEFAULT VALUES RETURNING id;")
-            .fetch_one(&*pool)
+            .fetch_one(pool)
             .await?
             .id;
         sqlx::query!(
@@ -59,7 +59,7 @@ async fn insert_verses(
             verse.0,
             verse.1 as i64,
         )
-        .execute(&*pool)
+        .execute(pool)
         .await?;
         res.push(new_id);
     }
@@ -67,7 +67,7 @@ async fn insert_verses(
 }
 
 /// Given a chapter with `number_of_verses` verses, chunk it into this length of chunk
-fn divide_into_good_chunks(number_of_verses: u8) -> u8 {
+fn divide_into_good_chunks(number_of_verses: usize) -> usize {
     if number_of_verses % 7 >= 3 || number_of_verses % 7 == 0 {
         7
     } else if number_of_verses % 6 >= 3 || number_of_verses % 6 == 0 {
@@ -90,17 +90,13 @@ async fn insert_chapter(
         chapter
             .iter()
             .filter(|b| b.block_type() == critic_format::streamed::BlockType::Anchor)
-            .count() as u8,
+            .count(),
     );
     let mut current_verse = starting_verse_id;
 
     // the verse markup is always one block long, the content one further block
-    for chunk in chapter
-        .into_iter()
-        .chunks(2 * chunk_size as usize)
-        .into_iter()
-    {
-        let mut verses = Vec::with_capacity(2 * chunk_size as usize);
+    for chunk in &chapter.into_iter().chunks(2 * chunk_size) {
+        let mut verses = Vec::with_capacity(2 * chunk_size);
         let initial_page_chunk =
             critic_format::streamed::Block::Break(critic_format::streamed::BreakType::Page(
                 format!("MAPM from verse {starting_verse_id}"),
@@ -144,35 +140,35 @@ async fn insert_book(
             language_id,
         )
         .await?;
-        current_verse += chapter.0 as u32;
+        current_verse += u32::from(chapter.0);
     }
     Ok(())
 }
 
-async fn insert_versification_scheme(pool: &Pool<Postgres>) -> Result<Option<i64>, sqlx::Error> {
+async fn insert_versification_scheme(pool: &Pool<Postgres>) -> Result<i64, sqlx::Error> {
     Ok(sqlx::query!(
-        "WITH e AS (INSERT INTO versification_scheme (full_name, shorthand) VALUES ('Masoretic', 'MT') ON CONFLICT DO NOTHING RETURNING id)
-        SELECT * FROM e UNION SELECT id FROM versification_scheme WHERE full_name = 'Masoretic' and shorthand = 'MT';"
+        r#"WITH e AS (INSERT INTO versification_scheme (full_name, shorthand) VALUES ('Masoretic', 'MT') ON CONFLICT DO NOTHING RETURNING id)
+        SELECT id as "id!" FROM e UNION SELECT id FROM versification_scheme WHERE full_name = 'Masoretic' and shorthand = 'MT';"#
     )
-    .fetch_one(&*pool)
+    .fetch_one(pool)
     .await?.id)
 }
 
-async fn insert_language(pool: &Pool<Postgres>) -> Result<Option<i64>, sqlx::Error> {
+async fn insert_language(pool: &Pool<Postgres>) -> Result<i64, sqlx::Error> {
     Ok(sqlx::query!(
-        "WITH e AS (INSERT INTO language (name, equality_alphabet) VALUES ('hbo', 'אבגדהוזחטיךכלםמןנסעףפץצקרשת') ON CONFLICT DO NOTHING RETURNING id)
-        SELECT * FROM e UNION SELECT id FROM language WHERE name = 'hbo';"
+        r#"WITH e AS (INSERT INTO language (name, equality_alphabet) VALUES ('hbo', 'אבגדהוזחטיךכלםמןנסעףפץצקרשת') ON CONFLICT DO NOTHING RETURNING id)
+        SELECT id as "id!" FROM e UNION SELECT id FROM language WHERE name = 'hbo';"#
     )
-    .fetch_one(&*pool)
+    .fetch_one(pool)
     .await?.id)
 }
 
 /// Insert the complete corpus into the db
 pub async fn insert(pool: &Pool<Postgres>, corpus: Corpus) -> Result<(), sqlx::Error> {
     // insert the versification scheme
-    let versification_scheme_id = insert_versification_scheme(pool).await?.unwrap();
+    let versification_scheme_id = insert_versification_scheme(pool).await?;
     // insert the language
-    let language_id = insert_language(pool).await?.unwrap();
+    let language_id = insert_language(pool).await?;
 
     for book in corpus.books {
         insert_book(pool, book.0, book.1, versification_scheme_id, language_id).await?;

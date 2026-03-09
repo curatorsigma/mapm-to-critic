@@ -1,5 +1,5 @@
 //! This 'script' takes the MAPM data in simple format
-//! (found at https://github.com/marcstober/miqra-data/blob/master/miqra-json-simple/MAM-ChamMeg.json)
+//! found [here](https://github.com/marcstober/miqra-data/blob/master/miqra-json-simple/MAM-ChamMeg.json)
 //! and turns it into critic-tei-xml
 
 mod db;
@@ -74,7 +74,7 @@ impl core::fmt::Display for EnglishBook {
 }
 
 impl EnglishBook {
-    fn english_name(&self) -> &'static str {
+    fn english_name(self) -> &'static str {
         match self {
             Self::Psalms => "Psalms",
             Self::Proverbs => "Proverbs",
@@ -231,7 +231,7 @@ impl TryFrom<SimpleMapmNumerals> for SimpleMapm {
             value
                 .0
                 .into_iter()
-                .map(|x| x.try_into())
+                .map(core::convert::TryInto::try_into)
                 .collect::<Result<Vec<_>, _>>()?,
         ))
     }
@@ -252,10 +252,6 @@ impl MapmBookWithNumeralChaps {
                 self.book_name.clone()
             }),
         )
-    }
-
-    fn english_title(&self) -> Result<&'static str, ConversionError> {
-        self.english_name().map(|book| book.english_name())
     }
 }
 impl TryFrom<MapmBookWithNumeralChaps> for MapmBook {
@@ -289,7 +285,7 @@ impl TryFrom<MapmBookWithNumeralChaps> for MapmBook {
 
         Ok(Self {
             book,
-            chapters: chapters.into_iter().filter_map(|s| s).collect(),
+            chapters: chapters.into_iter().flatten().collect(),
         })
     }
 }
@@ -300,20 +296,15 @@ struct MapmBook {
     chapters: Vec<MapmChapter>,
 }
 impl MapmBook {
-    /// A list of the number of verses per chapter in this book
-    fn chapter_enumeration(&self) -> Vec<u8> {
-        self.chapters.iter().map(|c| c.0.len() as u8).collect()
-    }
-
-    fn to_streamed_book(self) -> Result<Book, ConversionError> {
+    fn into_streamed_book(self) -> Book {
         let mut total_versified_content = Vec::with_capacity(self.chapters.len());
 
         let mut current_chapter = 0;
-        for chapter in self.chapters.into_iter() {
+        for chapter in self.chapters {
             current_chapter += 1;
             let mut current_verse = 0;
             let mut chapter_content = Vec::new();
-            for verse in chapter.0.into_iter() {
+            for verse in chapter.0 {
                 current_verse += 1;
                 chapter_content.push(critic_format::streamed::Block::Anchor(
                     critic_format::normalized::Anchor {
@@ -333,14 +324,14 @@ impl MapmBook {
             }
             total_versified_content.push((current_verse, chapter_content));
         }
-        Ok(Book {
+        Book {
             name: Some(self.book),
             chapters: total_versified_content,
-        })
+        }
     }
 }
 
-/// Remove all <span> ... </span> elements in input
+/// Remove all `<span> ... </span>` elements in input.
 fn span_clean(input: String) -> String {
     let re = regex::Regex::new("<span.*>.*</span>").expect("Static Regex");
     let res = re.replace_all(&input, "");
@@ -351,9 +342,13 @@ fn span_clean(input: String) -> String {
     }
 }
 
-#[derive(Default, Debug, Deserialize)]
+/// A Chapter in the simple `MapM` json format, with the verse numbers already parsed and the verses
+/// sorted in the correct order.
+#[derive(Default, Debug)]
 struct MapmChapter(Vec<String>);
 
+/// A Chapter in the simple `MapM` json format, with the verse numbers expressed as keys in the
+/// `HashMap`.
 #[derive(Default, Debug, Deserialize)]
 struct MapmChapterNumeralVerses(HashMap<String, String>);
 impl TryFrom<MapmChapterNumeralVerses> for MapmChapter {
@@ -378,10 +373,11 @@ impl TryFrom<MapmChapterNumeralVerses> for MapmChapter {
                 }
             }
         }
-        Ok(Self(res.into_iter().filter_map(|s| s).collect()))
+        Ok(Self(res.into_iter().flatten().collect()))
     }
 }
 
+/// Things that can go wrong while converting chapter numbers from hebrew numerals to numbers.
 #[derive(Debug)]
 enum ChapterConversionError {
     LinesNotSuccessive(u32),
@@ -404,6 +400,7 @@ impl core::fmt::Display for ChapterConversionError {
 }
 impl core::error::Error for ChapterConversionError {}
 
+/// Things that can go wrong while converting from the `MapM` Data to Critic-TEI-XML
 #[derive(Debug)]
 enum ConversionError {
     BookTitleUnknown(String),
@@ -434,13 +431,18 @@ impl core::fmt::Display for ConversionError {
 }
 impl core::error::Error for ConversionError {}
 
-#[derive(Debug, Deserialize, Default)]
+/// The entire `MapM` Corpus, with verse and chapter numbers flattened.
+#[derive(Debug, Default)]
 struct Corpus {
+    /// The books, in order, with the verse number of the first verse in each book.
     books: Vec<(u32, Book)>,
 }
+/// An entire Book in the `MapM`, with verse and chapter numbers flattened.
 #[derive(Debug, Deserialize, Default)]
 struct Book {
+    /// The name of this book.
     name: Option<EnglishBook>,
+    /// The chapters, in order, with the verse number of the first verse in each chapter.
     chapters: Vec<(u8, Vec<critic_format::streamed::Block>)>,
 }
 
@@ -454,9 +456,10 @@ async fn main() -> Result<(), Box<dyn core::error::Error>> {
             break;
         }
     }
-    if connection_string.is_none() {
-        panic!("I need a connection_string to the DB in the .env file like for use with sqlx.");
-    }
+    assert!(
+        connection_string.is_some(),
+        "I need a connection_string to the DB in the .env file like for use with sqlx."
+    );
     let args = Args::parse();
 
     // read the input data file by file
@@ -478,15 +481,15 @@ async fn main() -> Result<(), Box<dyn core::error::Error>> {
                     }
                 };
                 let mapm_content: SimpleMapm = mapm_content.try_into()?;
-                for book in mapm_content.0.into_iter() {
+                for book in mapm_content.0 {
                     let book_name = book.book;
-                    let streamed_book = book.to_streamed_book()?;
+                    let streamed_book = book.into_streamed_book();
                     corpus.books[book_name as usize - 1] = (0, streamed_book);
                 }
             }
             Err(e) => {
                 eprintln!("Error while reading file.");
-                return Err(e)?;
+                Err(e)?;
             }
         }
     }
